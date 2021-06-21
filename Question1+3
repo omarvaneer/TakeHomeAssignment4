@@ -1,0 +1,185 @@
+%%Question 1
+clear; close all; clc;
+
+data.train.N = 1000;
+data.vali.N = 10000;
+dsets = fieldnames(data);
+
+for i = 1 : length(dsets)
+    [data.(dsets{i}).datax, data.(dsets{i}).datay] = exam4q1_generateData(data.(dsets{i}).N);
+    figure();
+    plot(data.(dsets{i}).datax, data.(dsets{i}).datay, '.');
+    xlabel('x'); ylabel('y'); title(dsets{i});
+end
+
+%%
+[data.train.net, data.train.MSEerror, M, stats] = kfold(data.train.datax, data.train.datay);
+validateY = data.train.net(data.vali.datax);
+MSE = mean((validateY - data.vali.datay).^2)
+
+figure();
+plot(data.vali.datax,data.vali.datay, 'o')
+hold all;
+plot(data.vali.datax,validateY, '.')
+xlabel('x'); ylabel('y'); title('Actual data vs. Trained data');
+legend('Actual data', 'Trained data');
+
+figure()
+stem(stats.M, stats.error);
+xlabel('Number of Perceptrons');
+ylabel('MSE');
+title('Mean Squared Error vs. Number of Perceptrons for');
+
+
+%% Question 3
+
+clear all;
+close all;
+clc;
+filenames = {'3096_color.jpg';'42049_color.jpg'};
+dTypes={'c3096' 'c42049'};
+
+%Cross validation parameters
+NumGMMtoCheck=10; %Number of Params
+k=10; %Number of folds
+
+for ind=1:length(filenames)
+    %Read in data
+    imdata = imread(filenames{ind});
+    figure(1);
+    subplot(length(filenames),3,(ind-1)*3+1);
+    imshow(imdata);
+    
+    %Flatten into num features x number of normalized points
+    [R,C,D]=size(imdata);
+    N=R*C;
+    imdata=double(imdata);
+    rows=(1:R)'*ones(1,C);
+    columns=ones(R,1)*(1:C);
+    featureData=[rows(:)';columns(:)'];
+    
+    for ind2=1:D
+        imdatad=imdata(:,:,ind2);
+        featureData=[featureData; imdatad(:)'];
+    end
+    
+    minf=min(featureData,[],2);
+    maxf=max(featureData,[],2);
+    ranges=maxf-minf;
+    
+    %Normalized data
+    x=(featureData-minf)./ranges;
+    
+    %Assess for GMM with 2 Gaussians case
+    GMM2=fitgmdist(x',2,'Replicates',10);
+    post2=posterior(GMM2,x')';
+    decisions=post2(2,:)>post2(1,:);
+    
+    %Plot GMM=2 case
+    labelImage2=reshape(decisions,R,C);
+    subplot(length(filenames),3,(ind-1)*3+2);
+    imshow(uint8(labelImage2*255/2));
+    
+    %Perform k-fold cross-validation to determine optimal number of
+    %Gaussians for GMM model
+    N=length(x);
+    numValIters=10;
+    
+    %Setup cross validation on training data
+    partSize=floor(N/k);
+    partInd=[1:partSize:N length(x)];
+    
+    %Perform cross validation to select number of perceptrons
+    for NumGMMs=1:NumGMMtoCheck
+        for NumKs=1:k
+            index.val=partInd(NumKs):partInd(NumKs+1);
+            index.train=setdiff(1:N,index.val);
+            
+            %Create object with M perceptrons in hidden layer
+            GMMk_loop=fitgmdist(x(:,index.train)',NumGMMs,...
+                'Replicates',5);
+            
+            if GMMk_loop.Converged
+                probX(NumKs)=sum(log(pdf(GMMk_loop,x(:,index.val)')));
+            else
+                probX(NumKs)=0;
+            end
+        end
+        
+        %Determine average probability of error for a number of perceptrons
+        avgProb(ind,NumGMMs)=mean(probX);
+        stats(ind).NumGMMs=1:NumGMMtoCheck;
+        stats(ind).avgProb=avgProb;
+        stats(ind).mProb(:,NumGMMs)=probX;
+        fprintf('File: %1.0f, NumGMM: %1.0f\n',ind,NumGMMs);
+    end
+    
+    %Select GMM with max. probability
+    [~,optNumGMM]=max(avgProb(ind,:));
+    
+    GMMk=fitgmdist(x',optNumGMM,'Replicates',10);
+    postk=posterior(GMMk,x')';
+    lossMatrix=ones(optNumGMM,optNumGMM)-eye(optNumGMM);
+    expectedRisks =lossMatrix*postk; % Expected Risk for each label (rows)
+    [~,decisions] = min(expectedRisks,[],1); % Minimum expected risk  decision with 0-1 loss is the same as MAP
+    %Plot segmented image for Max. Likelihood number of GMMs case
+    labelImageK=reshape(decisions-1,R,C);
+    subplot(length(filenames),3,(ind-1)*3+3);
+    imshow(uint8(labelImageK*255/2));
+    save(['HW4_P3_Part' num2str(ind) '.mat']);
+end
+
+%% function
+function [outputNet, minError, bestM, stats] = kfold(datax, datay)
+N = length(datax);
+k = 10;
+percep = 15;
+
+partition = N/k;
+partInd = [1:partition:N length(datax)];
+
+for M = 1:percep
+    figure();
+    % K-fold cross validation
+    for i = 1:k
+        index.vali = partInd(i):partInd(i+1)-1;
+        index.train = setdiff(1:N,index.vali);
+        
+        net = feedforwardnet(M);
+        
+        net = train(net, datax(:,index.train), datay(:,index.train));
+        
+        validateY = net(datax(:,index.vali));
+        
+        MSE(i) = mean((validateY-datay(:,index.vali)).^2);
+        
+        subplot(5,2,i);
+        plot(datax(:,index.vali),datay(:,index.vali),'o')
+        hold all;
+        plot(datax(:,index.vali),validateY,'.')
+        if i==1
+            title([num2str(M) ' Perceptrons']);
+        end
+    end
+    aMSE(M) = mean(MSE);
+    stats.M=1:M;
+    stats.error = aMSE;
+    stats.MSE(:,M) = MSE;
+end
+
+[~,bestM] = min(aMSE);
+
+for i=1:10
+    netName(i)={['net' num2str(i)]};
+    FinalNet.(netName{i})= patternnet(bestM);
+    %FinalNet.layers{1}.transferFcn = 'poslin';
+    %FinalNet.layers{2}.transferFcn = 'softmax';
+    FinalNet.(netName{i})=train(net,datax,datay);
+    yVal=FinalNet.(netName{i})(datax);
+    finalError(i)=mean((yVal-datay).^2);
+end
+
+[minError,outInd]=min(finalError);
+stats.MSEfinal = finalError;
+outputNet = FinalNet.(netName{outInd});
+end
